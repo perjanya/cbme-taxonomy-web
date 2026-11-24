@@ -1,0 +1,229 @@
+{
+  "nodes": [
+    {
+      "id": "an-coronary-arteries",
+      "code": "AN22.2",
+      "title": "Origin, course, branches, and myocardial territory of right and left coronary arteries",
+      "subject": "AN",
+      "subjectName": "Anatomy",
+      "phase": "Phase-I",
+      "phaseLevel": 1,
+      "domain": [
+        "K"
+      ],
+      "miller": "KH",
+      "isCore": true,
+      "certifiable": false,
+      "tlm": [
+        "LGT",
+        "SGT",
+        "Practical"
+      ],
+      "assessment": [
+        "Written",
+        "Viva-Voce",
+        "OSPE"
+      ]
+    },
+    {
+      "id": "py-coronary-blood-flow",
+      "code": "PY5.5",
+      "title": "Phasic changes in coronary blood flow during cardiac cycle & autoregulation",
+      "subject": "PY",
+      "subjectName": "Physiology",
+      "phase": "Phase-I",
+      "phaseLevel": 1,
+      "domain": [
+        "K"
+      ],
+      "miller": "KH",
+      "isCore": true,
+      "certifiable": false,
+      "tlm": [
+        "LGT",
+        "SGT"
+      ],
+      "assessment": [
+        "Written",
+        "Viva-Voce"
+      ]
+    },
+    {
+      "id": "bi-cardiac-biomarkers",
+      "code": "BI11.17",
+      "title": "Biochemical basis and diagnostic window of Troponin-I, Troponin-T, and CK-MB",
+      "subject": "BI",
+      "subjectName": "Biochemistry",
+      "phase": "Phase-I",
+      "phaseLevel": 1,
+      "domain": [
+        "K",
+        "S"
+      ],
+      "miller": "SH",
+      "isCore": true,
+      "certifiable": false,
+      "tlm": [
+        "LGT",
+        "Practical"
+      ],
+      "assessment": [
+        "Written",
+        "OSPE"
+      ]
+    },
+    {
+      "id": "pa-myocardial-infarction",
+      "code": "PA27.5",
+      "title": "Etiopathogenesis, sequential gross & microscopic changes in Myocardial Infarction",
+      "subject": "PA",
+      "subjectName": "Pathology",
+      "phase": "Phase-II",
+      "phaseLevel": 2,
+      "domain": [
+        "K",
+        "S"
+      ],
+      "miller": "SH",
+      "isCore": true,
+      "certifiable": false,
+      "tlm": [
+        "LGT",
+        "SGT",
+        "Practical"
+      ],
+      "assessment": [
+        "Written",
+        "OSPE",
+        "Viva-Voce"
+      ]
+    },
+    {
+      "id": "ph-antianginal-antiplatelet",
+      "code": "PH1.13",
+      "title": "Mechanism of action, uses, and adverse effects of nitrates, beta-blockers, and antiplatelets",
+      "subject": "PH",
+      "subjectName": "Pharmacology",
+      "phase": "Phase-II",
+      "phaseLevel": 2,
+      "domain": [
+        "K"
+      ],
+      "miller": "KH",
+      "isCore": true,
+      "certifiable": false,
+      "tlm": [
+        "LGT",
+        "SGT"
+      ],
+      "assessment": [
+        "Written",
+        "Viva-Voce"
+      ]
+    },
+    {
+      "id": "im-stemi-diagnosis-management",
+      "code": "IM1.10",
+      "title": "Localize wall of MI on 12-lead ECG and formulate acute STEMI management protocol",
+      "subject": "IM",
+      "subjectName": "General Medicine",
+      "phase": "Phase-III-P2",
+      "phaseLevel": 4,
+      "domain": [
+        "K",
+        "S",
+        "A",
+        "C"
+      ],
+      "miller": "SH",
+      "isCore": true,
+      "certifiable": true,
+      "minQuota": 5,
+      "tlm": [
+        "Clinics",
+        "DOAP"
+      ],
+      "assessment": [
+        "OSCE",
+        "Skill-Assessment",
+        "Logbook"
+      ]
+    },
+    {
+      "id": "aetcom-breaking-bad-news",
+      "code": "AETCOM3.3",
+      "title": "Communicate critical cardiac prognosis empathetically to patient relatives using SPIKES protocol",
+      "subject": "AETCOM",
+      "subjectName": "AETCOM",
+      "phase": "Phase-III-P1",
+      "phaseLevel": 3,
+      "domain": [
+        "A",
+        "C"
+      ],
+      "miller": "SH",
+      "isCore": true,
+      "certifiable": true,
+      "minQuota": 2,
+      "tlm": [
+        "AETCOM-Session",
+        "SGT"
+      ],
+      "assessment": [
+        "OSCE",
+        "Logbook"
+      ]
+    }
+  ],
+  "links": [
+    {
+      "source": "an-coronary-arteries",
+      "target": "py-coronary-blood-flow",
+      "strength": "soft",
+      "type": "horizontal-integration",
+      "rationale": "Unverified semantic match (API batch fallback)."
+    },
+    {
+      "source": "an-coronary-arteries",
+      "target": "pa-myocardial-infarction",
+      "strength": "soft",
+      "type": "horizontal-integration",
+      "rationale": "Unverified semantic match (API batch fallback)."
+    },
+    {
+      "source": "py-coronary-blood-flow",
+      "target": "pa-myocardial-infarction",
+      "strength": "soft",
+      "type": "horizontal-integration",
+      "rationale": "Unverified semantic match (API batch fallback)."
+    },
+    {
+      "source": "bi-cardiac-biomarkers",
+      "target": "im-stemi-diagnosis-management",
+      "strength": "soft",
+      "type": "horizontal-integration",
+      "rationale": "Unverified semantic match (API batch fallback)."
+    },
+    {
+      "source": "pa-myocardial-infarction",
+      "target": "im-stemi-diagnosis-management",
+      "strength": "soft",
+      "type": "horizontal-integration",
+      "rationale": "Unverified semantic match (API batch fallback)."
+    },
+    {
+      "source": "ph-antianginal-antiplatelet",
+      "target": "im-stemi-diagnosis-management",
+      "strength": "soft",
+      "type": "horizontal-integration",
+      "rationale": "Unverified semantic match (API batch fallback)."
+    },
+    {
+      "source": "aetcom-breaking-bad-news",
+      "target": "im-stemi-diagnosis-management",
+      "strength": "soft",
+      "type": "horizontal-integration",
+      "rationale": "Unverified semantic match (API batch fallback)."
+    }
+  ]
+}

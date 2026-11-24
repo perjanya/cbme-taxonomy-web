@@ -1,0 +1,10 @@
+
+.env
+scripts/*.pdf
+scripts/checkpoint_*.json
+
+node_modules
+dist
+.env
+scripts/*.pdf
+scripts/checkpoint_*.json
