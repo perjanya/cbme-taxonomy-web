@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import ForceGraph2D from 'react-force-graph-2d';
-import { forceY, forceX, forceCollide } from 'd3-force';
+import ForceGraph3D from 'react-force-graph-3d';
+import * as THREE from 'three';
+import { forceY, forceRadial, forceCollide } from 'd3-force-3d';
 import {
   Search,
   Layers,
@@ -11,10 +12,10 @@ import {
   X,
   RotateCcw,
   Activity,
-  ZoomIn,
-  ZoomOut,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  Play,
+  Pause
 } from 'lucide-react';
 import rawData from './data/cbme-graph.json';
 
@@ -22,23 +23,23 @@ const SUBJECT_COLORS = {
   AN: '#38bdf8',     // Sky Blue
   PY: '#34d399',     // Emerald
   BI: '#fbbf24',     // Amber
-  PA: '#f87171',     // Rose
+  PA: '#f87171',     // Coral Red
   PH: '#a78bfa',     // Violet
   MI: '#fb923c',     // Orange
   FM: '#e879f9',     // Fuchsia
   CM: '#a3e635',     // Lime
   IM: '#2dd4bf',     // Teal
-  SU: '#60a5fa',     // Blue
+  SU: '#3b82f6',     // Royal Blue
   OG: '#f43f5e',     // Crimson
-  PE: '#38bdf8',     // Light Blue
-  AETCOM: '#f472b6'  // Pink
+  PE: '#22d3ee',     // Bright Cyan
+  AETCOM: '#f472b6'  // Rose Pink
 };
 
-const PHASE_BANDS = {
-  'Phase-I': { y: 360, label: 'PHASE I (Pre-Clinical)', color: '#38bdf8' },
-  'Phase-II': { y: 120, label: 'PHASE II (Para-Clinical)', color: '#a78bfa' },
-  'Phase-III-P1': { y: -120, label: 'PHASE III - PART 1', color: '#fbbf24' },
-  'Phase-III-P2': { y: -360, label: 'PHASE III - PART 2 (Clinical)', color: '#2dd4bf' }
+const FUNNEL_STRATA = {
+  'Phase-I': { y: -300, radius: 400, label: 'PHASE I · Pre-Clinical', color: '#38bdf8' },
+  'Phase-II': { y: -100, radius: 290, label: 'PHASE II · Para-Clinical', color: '#a78bfa' },
+  'Phase-III-P1': { y: 100, radius: 195, label: 'PHASE III · Part 1', color: '#fbbf24' },
+  'Phase-III-P2': { y: 300, radius: 115, label: 'PHASE III · Part 2 (Clinical)', color: '#2dd4bf' }
 };
 
 const SYSTEM_KEYWORDS = [
@@ -68,15 +69,45 @@ function getEndpointId(endpoint) {
   return typeof endpoint === 'object' && endpoint !== null ? endpoint.id : endpoint;
 }
 
+function makeTextSprite(text, color) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = 512;
+  canvas.height = 96;
+
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+  ctx.beginPath();
+  ctx.roundRect(16, 16, 480, 64, 32);
+  ctx.fill();
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.font = 'bold 26px Inter, system-ui, sans-serif';
+  ctx.fillStyle = '#f8fafc';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 256, 49);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(220, 42, 1);
+  return sprite;
+}
+
 export default function App() {
   const fgRef = useRef();
   const [selectedNode, setSelectedNode] = useState(null);
   const [selectedLink, setSelectedLink] = useState(null);
   const [hoveredNode, setHoveredNode] = useState(null);
+  const [isRotating, setIsRotating] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [phaseFilter, setPhaseFilter] = useState('ALL');
   const [subjectFilter, setSubjectFilter] = useState('ALL');
   const [systemFilter, setSystemFilter] = useState('ALL');
+  const [integrationMode, setIntegrationMode] = useState('ALL'); // 'ALL' | 'VERTICAL' | 'HORIZONTAL'
   const [dimensions, setDimensions] = useState({
     width: window.innerWidth,
     height: window.innerHeight
@@ -90,62 +121,199 @@ export default function App() {
   }, []);
 
   const enrichedNodes = useMemo(() => {
+    const degreeMap = {};
+    rawData.links.forEach((l) => {
+      const s = getEndpointId(l.source);
+      const t = getEndpointId(l.target);
+      degreeMap[s] = (degreeMap[s] || 0) + 1;
+      degreeMap[t] = (degreeMap[t] || 0) + 1;
+    });
+
     return rawData.nodes.map((n) => ({
       ...n,
-      system: inferSystem(n)
+      system: inferSystem(n),
+      degree: degreeMap[n.id] || 0
     }));
   }, []);
 
   const graphData = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    const filteredNodes = enrichedNodes.filter((n) => {
-      const matchesPhase = phaseFilter === 'ALL' || n.phase === phaseFilter;
-      const matchesSubject = subjectFilter === 'ALL' || n.subject === subjectFilter;
+
+    // 1. Base filter (System + Search)
+    const baseNodes = enrichedNodes.filter((n) => {
       const matchesSystem = systemFilter === 'ALL' || n.system === systemFilter;
       const matchesSearch =
         !q ||
         n.code.toLowerCase().includes(q) ||
         n.title.toLowerCase().includes(q) ||
         n.subjectName.toLowerCase().includes(q);
-      return matchesPhase && matchesSubject && matchesSystem && matchesSearch;
+      return matchesSystem && matchesSearch;
+    });
+    const baseNodeMap = new Map(baseNodes.map((n) => [n.id, n]));
+
+    // 2. Filter links by integration mode (Vertical vs Horizontal vs All)
+    const eligibleLinks = rawData.links.filter((l) => {
+      const src = getEndpointId(l.source);
+      const tgt = getEndpointId(l.target);
+      if (!baseNodeMap.has(src) || !baseNodeMap.has(tgt)) return false;
+
+      if (integrationMode === 'VERTICAL') {
+        return l.type === 'vertical-integration';
+      }
+      if (integrationMode === 'HORIZONTAL') {
+        return l.type === 'horizontal-integration';
+      }
+      return true;
     });
 
-    const nodeIds = new Set(filteredNodes.map((n) => n.id));
-    const filteredLinks = rawData.links
-      .filter((l) => {
+    // 3. When a specific Subject is chosen, keep all its nodes PLUS 1-hop integrated partners
+    let visibleNodeIds = new Set();
+    let finalLinks = [];
+
+    if (subjectFilter === 'ALL') {
+      baseNodes.forEach((n) => {
+        if (phaseFilter === 'ALL' || n.phase === phaseFilter) {
+          visibleNodeIds.add(n.id);
+        }
+      });
+      finalLinks = eligibleLinks
+        .filter((l) => {
+          const src = getEndpointId(l.source);
+          const tgt = getEndpointId(l.target);
+          return visibleNodeIds.has(src) && visibleNodeIds.has(tgt);
+        })
+        .map((l) => ({ ...l }));
+    } else {
+      const anchorIds = new Set(
+        baseNodes
+          .filter(
+            (n) =>
+              n.subject === subjectFilter &&
+              (phaseFilter === 'ALL' || n.phase === phaseFilter)
+          )
+          .map((n) => n.id)
+      );
+
+      anchorIds.forEach((id) => visibleNodeIds.add(id));
+
+      // Pull in cross-subject vertical & horizontal neighbors connected to the selected subject
+      eligibleLinks.forEach((l) => {
         const src = getEndpointId(l.source);
         const tgt = getEndpointId(l.target);
-        return nodeIds.has(src) && nodeIds.has(tgt);
-      })
-      .map((l) => ({ ...l }));
+        if (anchorIds.has(src) || anchorIds.has(tgt)) {
+          visibleNodeIds.add(src);
+          visibleNodeIds.add(tgt);
+          finalLinks.push({ ...l });
+        }
+      });
+    }
+
+    const filteredNodes = baseNodes.filter((n) => visibleNodeIds.has(n.id));
+
+    const seededNodes = filteredNodes.map((n, idx) => {
+      const stratum = FUNNEL_STRATA[n.phase] || { y: 0, radius: 250 };
+      const angle = idx * 2.39996;
+      const r = stratum.radius * (0.65 + 0.35 * ((idx % 10) / 10));
+      return {
+        ...n,
+        x: Math.cos(angle) * r,
+        y: stratum.y + ((idx % 5) - 2) * 8,
+        z: Math.sin(angle) * r
+      };
+    });
 
     return {
-      nodes: filteredNodes.map((n) => ({ ...n })),
-      links: filteredLinks
+      nodes: seededNodes,
+      links: finalLinks
     };
-  }, [enrichedNodes, searchQuery, phaseFilter, subjectFilter, systemFilter]);
+  }, [enrichedNodes, searchQuery, phaseFilter, subjectFilter, systemFilter, integrationMode]);
 
- useEffect(() => {
+  // Add translucent 3D Funnel Rings & Phase Labels to the Three.js Scene
+  useEffect(() => {
     const fg = fgRef.current;
     if (!fg) return;
 
-    // Disable default center-Y gravity so Phase bands stay locked in their strata
+    const scene = fg.scene();
+    const existingGroup = scene.getObjectByName('cbme-funnel-guides');
+    if (existingGroup) scene.remove(existingGroup);
+
+    const guideGroup = new THREE.Group();
+    guideGroup.name = 'cbme-funnel-guides';
+
+    const coneGeom = new THREE.CylinderGeometry(115, 415, 620, 48, 1, true);
+    const coneMat = new THREE.MeshBasicMaterial({
+      color: 0x1e293b,
+      transparent: true,
+      opacity: 0.14,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    guideGroup.add(new THREE.Mesh(coneGeom, coneMat));
+
+    Object.values(FUNNEL_STRATA).forEach((stratum) => {
+      const ringGeom = new THREE.TorusGeometry(stratum.radius, 1.5, 16, 100);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: stratum.color,
+        transparent: true,
+        opacity: 0.38
+      });
+      const ring = new THREE.Mesh(ringGeom, ringMat);
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = stratum.y;
+      guideGroup.add(ring);
+
+      const sprite = makeTextSprite(stratum.label, stratum.color);
+      sprite.position.set(stratum.radius + 115, stratum.y, 0);
+      guideGroup.add(sprite);
+    });
+
+    scene.add(guideGroup);
+  }, []);
+
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg) return;
+
     fg.d3Force('center', null);
     fg.d3Force(
       'y',
-      forceY((node) => PHASE_BANDS[node.phase]?.y ?? 0).strength(0.85)
+      forceY((node) => FUNNEL_STRATA[node.phase]?.y ?? 0).strength(0.95)
     );
-    fg.d3Force('x', forceX(0).strength(0.05));
-    fg.d3Force('collide', forceCollide(12));
-    const chargeStrength = graphData.nodes.length > 500 ? -45 : -95;
-    fg.d3Force('charge').strength(chargeStrength);
+    fg.d3Force(
+      'radial',
+      forceRadial(
+        (node) => FUNNEL_STRATA[node.phase]?.radius ?? 250,
+        0,
+        0,
+        0
+      ).strength(0.55)
+    );
+    fg.d3Force('collide', forceCollide(10));
+    fg.d3Force('charge').strength(graphData.nodes.length > 500 ? -22 : -60);
 
     fg.d3ReheatSimulation();
   }, [graphData]);
 
+  useEffect(() => {
+    if (!isRotating) return;
+
+    let angle = 0;
+    const distance = 1150;
+    const interval = setInterval(() => {
+      if (!fgRef.current) return;
+      angle += 0.004;
+      fgRef.current.cameraPosition({
+        x: distance * Math.sin(angle),
+        y: 160,
+        z: distance * Math.cos(angle)
+      });
+    }, 25);
+
+    return () => clearInterval(interval);
+  }, [isRotating]);
+
   const activeFocusNode = selectedNode || hoveredNode;
 
-  // Trace full upstream prerequisites, downstream unlocks, and direct edges for selectedNode
   const lineage = useMemo(() => {
     if (!activeFocusNode) {
       return {
@@ -209,27 +377,23 @@ export default function App() {
     return { ancestors, descendants, activeLinks, directIncoming, directOutgoing };
   }, [activeFocusNode, enrichedNodes]);
 
-  const focusNodeOnCanvas = useCallback((node) => {
-    if (!node || !fgRef.current) return;
-    // Find the live positioned node inside graphData if available
-    const liveNode = graphData.nodes.find((n) => n.id === node.id) || node;
-    if (typeof liveNode.x === 'number' && typeof liveNode.y === 'number') {
-      fgRef.current.centerAt(liveNode.x, liveNode.y, 600);
-      fgRef.current.zoom(2.4, 600);
+  const handleNodeClick = useCallback((node) => {
+    setIsRotating(false);
+    setSelectedNode(node);
+    setSelectedLink(null);
+
+    if (fgRef.current && typeof node.x === 'number') {
+      const distRatio = 1 + 260 / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
+      fgRef.current.cameraPosition(
+        { x: node.x * distRatio, y: node.y + 40, z: node.z * distRatio },
+        node,
+        900
+      );
     }
-  }, [graphData.nodes]);
+  }, []);
 
-  const handleNodeClick = useCallback(
-    (node) => {
-      setSelectedNode(node);
-      setSelectedLink(null);
-      focusNodeOnCanvas(node);
-    },
-    [focusNodeOnCanvas]
-  );
-
-  // Clicking a prerequisite or unlocked item highlights that specific edge & shows its rationale
   const handleInspectEdge = (sourceNode, targetNode, linkObj) => {
+    setIsRotating(false);
     setSelectedLink({
       source: sourceNode,
       target: targetNode,
@@ -237,9 +401,9 @@ export default function App() {
     });
   };
 
-  // Clicking an edge directly on the canvas opens its rationale in the drawer
   const handleCanvasLinkClick = useCallback(
     (link) => {
+      setIsRotating(false);
       const srcId = getEndpointId(link.source);
       const tgtId = getEndpointId(link.target);
       const srcNode = enrichedNodes.find((n) => n.id === srcId);
@@ -264,79 +428,100 @@ export default function App() {
     setPhaseFilter('ALL');
     setSubjectFilter('ALL');
     setSystemFilter('ALL');
-    if (fgRef.current) {
-      fgRef.current.zoomToFit(500, 90);
-    }
+    setIntegrationMode('ALL');
+    setIsRotating(true);
   };
-
-  const drawPhaseStrata = useCallback((ctx, globalScale) => {
-    const bandWidth = 4000;
-    const bandHeight = 210;
-
-    Object.values(PHASE_BANDS).forEach((band) => {
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.45)';
-      ctx.fillRect(-bandWidth / 2, band.y - bandHeight / 2, bandWidth, bandHeight);
-
-      ctx.beginPath();
-      ctx.setLineDash([8, 8]);
-      ctx.moveTo(-bandWidth / 2, band.y - bandHeight / 2);
-      ctx.lineTo(bandWidth / 2, band.y - bandHeight / 2);
-      ctx.strokeStyle = 'rgba(51, 65, 85, 0.45)';
-      ctx.lineWidth = 1 / globalScale;
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      const fontSize = Math.max(13 / globalScale, 9);
-      ctx.font = `700 ${fontSize}px Inter, system-ui, sans-serif`;
-      ctx.fillStyle = 'rgba(148, 163, 184, 0.35)';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(band.label, -620, band.y - bandHeight / 2 + 18);
-    });
-  }, []);
 
   const subjects = useMemo(
     () => [...new Set(enrichedNodes.map((n) => n.subject))].sort(),
     [enrichedNodes]
   );
 
+  // Live count of vertical vs horizontal beams currently rendered
+  const linkStats = useMemo(() => {
+    let vertical = 0;
+    let horizontal = 0;
+    graphData.links.forEach((l) => {
+      if (l.type === 'vertical-integration') vertical++;
+      else if (l.type === 'horizontal-integration') horizontal++;
+    });
+    return { vertical, horizontal };
+  }, [graphData.links]);
+
   const activeLinkKey = selectedLink
     ? `${selectedLink.source.id}->${selectedLink.target.id}`
     : null;
 
   return (
-    <div className="relative w-screen h-screen bg-slate-950 font-sans select-none overflow-hidden">
+    <div
+      className="relative w-screen h-screen bg-slate-950 font-sans select-none overflow-hidden"
+      onPointerDown={() => {
+        if (isRotating) setIsRotating(false);
+      }}
+    >
       {/* Top Floating Control Bar */}
-      <header className="absolute top-4 left-4 right-4 z-20 flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 backdrop-blur-md border border-slate-800 px-4 py-3 rounded-xl shadow-2xl">
+      <header className="absolute top-4 left-4 right-4 z-20 flex flex-wrap items-center justify-between gap-3 bg-slate-900/85 backdrop-blur-md border border-slate-800 px-4 py-3 rounded-xl shadow-2xl">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-teal-500/10 border border-teal-500/30 rounded-lg">
             <GitBranch className="w-5 h-5 text-teal-400" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-sm md:text-base font-bold text-white tracking-tight">
-                MBBS CBME Competency Explorer
+                MBBS CBME 3D Competency Funnel
               </h1>
               <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-teal-500/15 text-teal-300 border border-teal-500/30">
-                {graphData.nodes.length} nodes · {graphData.links.length} links
+                {graphData.nodes.length} nodes · {linkStats.vertical} vertical · {linkStats.horizontal} horizontal
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Stratified Phase Progression & Organ-System Integration Graph
+              {subjectFilter === 'ALL'
+                ? 'Interactive 3D Conical Curriculum & Vertical Integration Explorer'
+                : `Showing ${subjectFilter} competencies + integrated cross-subject partners`}
             </p>
           </div>
         </div>
 
-        {/* Search & Multi-Axis Filters */}
+        {/* Search, Integration Mode, Filters & Auto-Rotate Control */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* Integration Type Pill Switcher */}
+          <div className="flex items-center bg-slate-950 border border-slate-700 rounded-lg p-0.5 text-[11px]">
+            {[
+              { id: 'ALL', label: 'All Links' },
+              { id: 'VERTICAL', label: 'Vertical', dot: '#2dd4bf' },
+              { id: 'HORIZONTAL', label: 'Horizontal', dot: '#38bdf8' }
+            ].map((mode) => (
+              <button
+                key={mode.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIntegrationMode(mode.id);
+                }}
+                className={`px-2.5 py-1.5 rounded-md font-medium flex items-center gap-1.5 transition ${
+                  integrationMode === mode.id
+                    ? 'bg-slate-800 text-white shadow'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {mode.dot && (
+                  <span
+                    className="w-2 h-2 rounded-full"
+                    style={{ backgroundColor: mode.dot }}
+                  />
+                )}
+                {mode.label}
+              </button>
+            ))}
+          </div>
+
           <div className="relative">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
             <input
               type="text"
-              placeholder="Search code (AN22.2) or keyword..."
+              placeholder="Search code (AN22.2)..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="bg-slate-950 border border-slate-700 text-xs text-slate-100 rounded-lg pl-9 pr-3 py-2 w-52 focus:outline-none focus:border-teal-500"
+              className="bg-slate-950 border border-slate-700 text-xs text-slate-100 rounded-lg pl-9 pr-3 py-2 w-40 focus:outline-none focus:border-teal-500"
             />
           </div>
 
@@ -360,31 +545,49 @@ export default function App() {
           <select
             value={phaseFilter}
             onChange={(e) => setPhaseFilter(e.target.value)}
-            className="bg-slate-950 border border-slate-700 text-xs text-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:border-teal-500"
+            className="bg-slate-950 border border-slate-700 text-xs text-slate-200 rounded-lg px-2.5 py-2 focus:outline-none focus:border-teal-500"
           >
             <option value="ALL">All Phases (I – III)</option>
-            <option value="Phase-I">Phase I (Pre-Clinical)</option>
-            <option value="Phase-II">Phase II (Para-Clinical)</option>
+            <option value="Phase-I">Phase I (Base)</option>
+            <option value="Phase-II">Phase II (Mid-Lower)</option>
             <option value="Phase-III-P1">Phase III - Part 1</option>
-            <option value="Phase-III-P2">Phase III - Part 2</option>
+            <option value="Phase-III-P2">Phase III - Part 2 (Apex)</option>
           </select>
 
           <select
             value={subjectFilter}
             onChange={(e) => setSubjectFilter(e.target.value)}
-            className="bg-slate-950 border border-slate-700 text-xs text-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:border-teal-500"
+            className="bg-slate-950 border border-slate-700 text-xs text-slate-200 rounded-lg px-2.5 py-2 focus:outline-none focus:border-teal-500"
           >
             <option value="ALL">All Subjects</option>
             {subjects.map((sub) => (
               <option key={sub} value={sub}>
-                {sub}
+                {sub} (+ Integrations)
               </option>
             ))}
           </select>
 
           <button
-            onClick={resetView}
-            title="Reset Filters & Zoom"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsRotating((prev) => !prev);
+            }}
+            className={`px-2.5 py-2 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition ${
+              isRotating
+                ? 'bg-teal-500/20 border-teal-500/40 text-teal-300'
+                : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+            }`}
+            title="Toggle 3D Auto-Rotation"
+          >
+            {isRotating ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+          </button>
+
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              resetView();
+            }}
+            title="Reset Filters & Resume Orbit"
             className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition"
           >
             <RotateCcw className="w-4 h-4" />
@@ -392,52 +595,37 @@ export default function App() {
         </div>
       </header>
 
-      {/* High-Performance Canvas Graph */}
-      <ForceGraph2D
+      {/* 3D WebGL Conical Funnel Canvas */}
+      <ForceGraph3D
         ref={fgRef}
         width={dimensions.width}
         height={dimensions.height}
         graphData={graphData}
         backgroundColor="#020617"
-        cooldownTicks={120}
-        warmupTicks={40}
-        nodeRelSize={6}
-        linkHoverPrecision={6}
-        onRenderFramePre={drawPhaseStrata}
-        onNodeClick={handleNodeClick}
-        onLinkClick={handleCanvasLinkClick}
-        onNodeHover={(node) => setHoveredNode(node || null)}
-        onBackgroundClick={() => {
-          setSelectedNode(null);
-          setSelectedLink(null);
-        }}
-        linkDirectionalArrowLength={(link) => {
-          const key = `${getEndpointId(link.source)}->${getEndpointId(link.target)}`;
-          if (key === activeLinkKey) return 8;
-          return activeFocusNode && lineage.activeLinks.has(key) ? 6 : 0;
-        }}
-        linkDirectionalArrowRelPos={0.9}
-        linkCurvature={0.12}
-        linkColor={(link) => {
-          const key = `${getEndpointId(link.source)}->${getEndpointId(link.target)}`;
-          if (key === activeLinkKey) return '#fbbf24'; // Bright Amber highlight for inspected edge
-
-          if (activeFocusNode) {
-            if (!lineage.activeLinks.has(key)) return 'rgba(148, 163, 184, 0.04)';
-            return link.type === 'horizontal-integration' ? '#38bdf8' : '#2dd4bf';
+        showNavInfo={false}
+        cooldownTicks={90}
+        warmupTicks={30}
+        nodeResolution={10}
+        nodeLabel={(node) =>
+          `<div style="background:#0f172a;color:#f8fafc;padding:6px 10px;border-radius:8px;border:1px solid #334155;font-family:sans-serif;font-size:12px;max-width:260px;">
+            <strong style="color:${SUBJECT_COLORS[node.subject] || '#38bdf8'}">${node.code}</strong> · ${node.phase}<br/>
+            <span>${node.title}</span>
+          </div>`
+        }
+        nodeVal={(node) => {
+          const isFocus =
+            selectedNode?.id === node.id ||
+            hoveredNode?.id === node.id ||
+            (selectedLink &&
+              (selectedLink.source.id === node.id || selectedLink.target.id === node.id));
+          if (isFocus) return 8;
+          // Highlight primary subject nodes slightly larger than cross-subject partners
+          if (subjectFilter !== 'ALL' && node.subject === subjectFilter) {
+            return 2.4 + Math.min(node.degree * 0.45, 5);
           }
-          const baseAlpha = graphData.nodes.length > 400 ? 0.14 : 0.35;
-          return link.type === 'horizontal-integration'
-            ? `rgba(56, 189, 248, ${baseAlpha})`
-            : `rgba(148, 163, 184, ${baseAlpha})`;
+          return 1.4 + Math.min(node.degree * 0.35, 4);
         }}
-        linkWidth={(link) => {
-          const key = `${getEndpointId(link.source)}->${getEndpointId(link.target)}`;
-          if (key === activeLinkKey) return 3.6;
-          return activeFocusNode && lineage.activeLinks.has(key) ? 2.4 : 0.9;
-        }}
-        linkLineDash={(link) => (link.strength === 'soft' ? [4, 4] : null)}
-        nodeCanvasObject={(node, ctx, globalScale) => {
+        nodeColor={(node) => {
           const isSelected = selectedNode?.id === node.id;
           const isHovered = hoveredNode?.id === node.id;
           const isEdgeEndpoint =
@@ -449,75 +637,66 @@ export default function App() {
           const dimmed =
             activeFocusNode && !isSelected && !isHovered && !isRelated && !isEdgeEndpoint;
 
-          const baseColor = SUBJECT_COLORS[node.subject] || '#94a3b8';
-          const radius =
-            isSelected || isHovered || isEdgeEndpoint ? 8.5 : node.isCore ? 5.5 : 4.2;
-
-          if (isSelected || isHovered || isRelated || isEdgeEndpoint) {
-            ctx.beginPath();
-            ctx.arc(node.x, node.y, radius + 4, 0, 2 * Math.PI, false);
-            ctx.fillStyle = isEdgeEndpoint
-              ? 'rgba(251, 191, 36, 0.32)'
-              : isSelected || isHovered
-              ? 'rgba(45, 212, 191, 0.32)'
-              : 'rgba(255, 255, 255, 0.14)';
-            ctx.fill();
-          }
-
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
-          ctx.fillStyle = dimmed ? 'rgba(71, 85, 105, 0.22)' : baseColor;
-          ctx.fill();
-
-          const shouldShowLabel =
-            isSelected ||
-            isHovered ||
-            isRelated ||
-            isEdgeEndpoint ||
-            (globalScale > 1.5 && !dimmed) ||
-            (graphData.nodes.length <= 40 && !dimmed);
-
-          if (shouldShowLabel) {
-            const fontSize = Math.max(11 / globalScale, 3.8);
-            ctx.font = `600 ${fontSize}px Inter, system-ui, sans-serif`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'top';
-            ctx.fillStyle =
-              isSelected || isHovered || isEdgeEndpoint ? '#ffffff' : '#e2e8f0';
-            ctx.fillText(node.code, node.x, node.y + radius + 2.5);
-          }
+          if (isEdgeEndpoint) return '#fbbf24';
+          if (dimmed) return '#1e293b';
+          return SUBJECT_COLORS[node.subject] || '#94a3b8';
         }}
+        nodeOpacity={0.92}
+        onNodeClick={handleNodeClick}
+        onLinkClick={handleCanvasLinkClick}
+        onNodeHover={(node) => setHoveredNode(node || null)}
+        onBackgroundClick={() => {
+          setSelectedNode(null);
+          setSelectedLink(null);
+        }}
+        linkColor={(link) => {
+          const key = `${getEndpointId(link.source)}->${getEndpointId(link.target)}`;
+          if (key === activeLinkKey) return '#fbbf24';
+
+          const isVert = link.type === 'vertical-integration';
+          const isHoriz = link.type === 'horizontal-integration';
+
+          if (activeFocusNode) {
+            if (!lineage.activeLinks.has(key)) return 'rgba(30, 41, 59, 0.05)';
+            return isVert ? '#2dd4bf' : isHoriz ? '#38bdf8' : '#a78bfa';
+          }
+
+          // When inspecting a subject, make its vertical & horizontal beams glow brightly
+          const opacity = subjectFilter !== 'ALL' ? 0.55 : 0.24;
+          if (isVert) return `rgba(45, 212, 191, ${opacity})`;
+          if (isHoriz) return `rgba(56, 189, 248, ${opacity})`;
+          return `rgba(148, 163, 184, ${opacity * 0.6})`;
+        }}
+        linkWidth={(link) => {
+          const key = `${getEndpointId(link.source)}->${getEndpointId(link.target)}`;
+          if (key === activeLinkKey) return 2.8;
+          if (activeFocusNode && lineage.activeLinks.has(key)) return 1.8;
+          return subjectFilter !== 'ALL' ? 0.9 : 0.4;
+        }}
+        linkOpacity={0.75}
+        linkDirectionalParticles={(link) => {
+          const key = `${getEndpointId(link.source)}->${getEndpointId(link.target)}`;
+          if (activeFocusNode && lineage.activeLinks.has(key)) return 3;
+          // Show subtle upward particle flow on vertical beams when a subject is selected
+          if (subjectFilter !== 'ALL' && link.type === 'vertical-integration') return 1;
+          return 0;
+        }}
+        linkDirectionalParticleWidth={2.0}
+        linkDirectionalParticleSpeed={0.006}
       />
 
-      {/* Zoom Controls */}
-      {!selectedNode && (
-        <div className="absolute bottom-4 right-4 z-20 flex flex-col gap-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-800 p-1.5 rounded-xl">
-          <button
-            onClick={() => fgRef.current?.zoom(fgRef.current.zoom() * 1.4, 300)}
-            className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg"
-            title="Zoom In (Reveals Competency Codes)"
-          >
-            <ZoomIn className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => fgRef.current?.zoom(fgRef.current.zoom() / 1.4, 300)}
-            className="p-2 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg"
-            title="Zoom Out"
-          >
-            <ZoomOut className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
-      {/* Bottom Subject & Edge Legend */}
-      <div className="absolute bottom-4 left-4 z-20 bg-slate-900/90 backdrop-blur-md border border-slate-800 px-4 py-2.5 rounded-xl flex flex-wrap items-center gap-3 text-xs max-w-[calc(100vw-6rem)]">
+      {/* Bottom Subject & Link Type Legend */}
+      <div className="absolute bottom-4 left-4 z-20 bg-slate-900/85 backdrop-blur-md border border-slate-800 px-4 py-2.5 rounded-xl flex flex-wrap items-center gap-3 text-xs max-w-[calc(100vw-2rem)]">
         <span className="text-slate-400 font-medium flex items-center gap-1.5">
           <Layers className="w-3.5 h-3.5 text-teal-400" /> Subjects:
         </span>
         {Object.entries(SUBJECT_COLORS).map(([code, color]) => (
           <button
             key={code}
-            onClick={() => setSubjectFilter(subjectFilter === code ? 'ALL' : code)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSubjectFilter(subjectFilter === code ? 'ALL' : code);
+            }}
             className={`flex items-center gap-1.5 px-1.5 py-0.5 rounded transition ${
               subjectFilter === code ? 'bg-slate-800 ring-1 ring-teal-400' : 'hover:bg-slate-800/60'
             }`}
@@ -527,13 +706,20 @@ export default function App() {
           </button>
         ))}
         <span className="text-slate-700">|</span>
-        <span className="text-slate-400">Click any node or edge to inspect rationale</span>
+        <span className="flex items-center gap-1.5 text-teal-300">
+          <span className="w-3 h-0.5 bg-teal-400 inline-block" /> Vertical
+        </span>
+        <span className="flex items-center gap-1.5 text-sky-300">
+          <span className="w-3 h-0.5 bg-sky-400 inline-block" /> Horizontal
+        </span>
       </div>
 
       {/* Right Side CBME Competency & Rationale Inspector Drawer */}
       {selectedNode && (
-        <aside className="absolute top-24 right-4 bottom-4 w-[26rem] max-w-[calc(100vw-2rem)] z-30 bg-slate-900/95 backdrop-blur-xl border border-slate-800 rounded-2xl shadow-2xl p-5 overflow-y-auto">
-          {/* Active Link Clinical Rationale Spotlight Card */}
+        <aside
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute top-24 right-4 bottom-4 w-[26rem] max-w-[calc(100vw-2rem)] z-30 bg-slate-900/95 backdrop-blur-xl border border-slate-800 rounded-2xl shadow-2xl p-5 overflow-y-auto"
+        >
           {selectedLink && (
             <div className="mb-4 p-3.5 rounded-xl bg-amber-500/10 border border-amber-400/40 shadow-lg">
               <div className="flex items-center justify-between gap-2 mb-2">
@@ -544,7 +730,6 @@ export default function App() {
                 <button
                   onClick={() => setSelectedLink(null)}
                   className="text-amber-300/70 hover:text-amber-200"
-                  title="Close Link Rationale"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -564,8 +749,7 @@ export default function App() {
               </div>
 
               <p className="text-xs text-slate-100 leading-relaxed bg-slate-950/70 p-2.5 rounded-lg border border-amber-500/20">
-                {selectedLink.rationale ||
-                  'No detailed rationale text recorded for this link yet.'}
+                {selectedLink.rationale || 'No detailed rationale text recorded for this link yet.'}
               </p>
 
               <div className="mt-2.5 flex items-center justify-between text-[11px]">
@@ -673,7 +857,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Certifiable Logbook Quota */}
           {selectedNode.certifiable && (
             <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center gap-2.5 text-xs text-amber-300">
               <Award className="w-4 h-4 shrink-0" />
@@ -684,16 +867,14 @@ export default function App() {
             </div>
           )}
 
-          {/* Direct Upstream Prerequisites (with click-to-inspect rationale) */}
+          {/* Direct Upstream Prerequisites */}
           <div className="mb-4">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
               <BookOpen className="w-3.5 h-3.5 text-teal-400" />
               Direct Prerequisites ({lineage.directIncoming.length})
             </h3>
             {lineage.directIncoming.length === 0 ? (
-              <p className="text-xs text-slate-500 italic">
-                Entry-level foundational competency.
-              </p>
+              <p className="text-xs text-slate-500 italic">Entry-level foundational competency.</p>
             ) : (
               <ul className="space-y-2">
                 {lineage.directIncoming.map(({ node: item, link }) => {
@@ -729,7 +910,7 @@ export default function App() {
             )}
           </div>
 
-          {/* Direct Downstream Clinical Unlocks (with click-to-inspect rationale) */}
+          {/* Direct Downstream Clinical Unlocks */}
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5 text-sky-400" />
